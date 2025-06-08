@@ -5,11 +5,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Nft, NftContract } from 'src/entities';
 import { Repository } from 'typeorm';
 import { catchError, from, mergeMap, of } from 'rxjs'
+import { InjectQueue } from '@nestjs/bull';
+import { Queue } from 'bull';
 
 @Injectable()
 export class NftService {
     private readonly alchemyEndpoint: string;
     private readonly alchemyApiKey: string;
+    
     constructor(
         private configService: ConfigService,
         private httpService: HttpService,
@@ -17,6 +20,7 @@ export class NftService {
         private nftRepository: Repository<Nft>,
         @InjectRepository(NftContract)
         private nftContractRepository: Repository<NftContract>,
+        @InjectQueue('nft') private nftQueue: Queue
     ){
         this.alchemyEndpoint = configService.get('ALCHEMY_ENDPOINT')
         this.alchemyApiKey =configService.get('ALCHEMY_API_KEY')
@@ -62,6 +66,8 @@ export class NftService {
                     nftContract.synced = false;
                     nftContract.image = contractMetadata.openSea?.imageUrl;
                     nftContract.totalSupply = contractMetadata.totalSupply;
+
+                    this.nftQueue.add('nft-token-load', { contractAddress });
 
                     return from(this.nftContractRepository.save(nftContract));
                 }),

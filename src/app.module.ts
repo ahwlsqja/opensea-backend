@@ -16,11 +16,24 @@ import { NftContract } from './entities';
 import { NftController } from './nft/nft.controller';
 import { NftService } from './nft/nft.service';
 import { HttpModule } from '@nestjs/axios';
+import { BullModule } from '@nestjs/bull';
 
 @Module({
   imports: [
     HttpModule,
     ConfigModule.forRoot(),
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        redis:{
+          host: configService.get('REDIS_HOST')
+        }
+      }),
+    }),
+    BullModule.registerQueue({
+      name: 'nft',
+    }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule, AuthModule],
       useFactory: (ConfigService: ConfigService) => ({
