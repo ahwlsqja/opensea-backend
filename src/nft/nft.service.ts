@@ -3,10 +3,13 @@ import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Nft, NftContract } from 'src/entities';
-import { Repository } from 'typeorm';
-import { catchError, from, mergeMap, of } from 'rxjs'
+import { MoreThanOrEqual, Repository } from 'typeorm';
+import { catchError, from, map, mergeMap, of, zip } from 'rxjs'
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
+import { BigNumber } from 'alchemy-sdk';
+import { ethers } from 'ethers';
+import { json } from 'stream/consumers';
 
 @Injectable()
 export class NftService {
@@ -74,5 +77,141 @@ export class NftService {
             );
           })
         );
+    }
+
+    getNfts(contractAddress: string, startToken?: string) {
+        return this.getNftContract(contractAddress).pipe(
+            mergeMap((contract) => {
+                if (contract.synced) {
+                    return this.getNftsFromDB(contractAddress, startToken);
+                } else {
+                    return this.getNftsFromAlchemy(contractAddress, startToken)
+                }
+            })
+        )
+    }
+
+    getNftsFromDB(contractAddress: string, startToken: string){
+        return from(
+            this.nftRepository.find({
+                where: {
+                    tokenId: MoreThanOrEqual(startToken || '0'),
+                    contractAddress,
+                },
+                order: {
+                    tokenId: 'asc',
+                },
+                take: 100,
+            }),
+        ).pipe(
+            map((nfts) => 
+                nfts.map((nft) => ({
+                    tokenId: nft.tokenId,
+                    name: nft.name,
+                    description: nft.description,
+                    image: nft.image
+                })),
+            ),
+        );
+    }
+
+    getNftsFromAlchemy(contractAddress: string, startToken?: string) {
+        return this.httpService.get(
+            `/nft/v2/${this.alchemyApiKey}/getNFTsForCollection`, 
+            {
+                baseURL: this.alchemyEndpoint,
+                params: {
+                    contractAddress,
+                    withMetadata: true,
+                    startToken,
+                }
+            },
+        ).pipe(
+            map((result) => {
+                return result.data.nfts.map((nft) => ({
+                    tokenId: nft.id.tokenId,
+                    name: nft.title,
+                    description: nft.description,
+                    image: nft.media[0]?.gateway,
+                }))
+            })
+        )
+    }
+
+    getNextToken(result) {
+        return result.length > 0 ? ethers.zeroPadValue(
+            ethers.toBeHex(
+                BigInt(result[result.length - 1].tokenId) + BigInt(1)
+            ),
+            32,
+        )
+        : null;
+    }
+
+    getNftMetadata(contractAddress: string, tokenId: string) {
+        return this.httpService.get(
+            `/nft/v2/${this.alchemyApiKey}/getNFTMetadata`,
+            {
+                baseURL: this.alchemyEndpoint,
+                params: {
+                    contractAddress,
+                    tokenId
+                },
+            })
+            .pipe(map((result) => result.data));
+    }
+
+    getOwnersForToken(contractAddress: string, tokenId: string) {
+        return this.httpService
+            .get(`/nft/v2/${this.alchemyApiKey}/getOwnersForToken`, {
+                baseURL: this.alchemyApiKey,
+                params: {
+                    contractAddress,
+                    tokenId,
+                },
+            })
+            .pipe(map((result) => result.data));
+    }
+
+    getNft(contractAddress: string, tokenId: string) {
+        return zip(
+            this.getNftMetadata(contractAddress, tokenId),
+            this.getOwnersForToken(contractAddress, tokenId),
+        ).pipe(
+            map(([nftMetadata, ownersForToken]) => {
+            return {
+                ...nftMetadata,
+                ...ownersForToken,
+            };
+          }),
+        );
+    }
+
+
+    getRecentHistory(contractAddress: string) {
+        return this.httpService.post(
+          `/v2/${this.alchemyApiKey}`,
+          {
+            id: 1,
+            jsonrpc: '2.0',
+            method: 'alchemy_getAssetTransfers',
+            params: [
+                {
+                    fromBlock: '0x0',
+                    toBlock: 'latest',
+                    category: ['ERC721'],
+                    contractAddresses:[contractAddress],
+                    withMetadata: false,
+                    maxCount: '0x3e8',
+                    order: 'desc'
+                },
+            ],
+          },
+          {
+            baseURL: this.alchemyEndpoint
+          },
+        ).pipe(
+            map((result) => result.data?.result?.transfers)
+        )
     }
 }
